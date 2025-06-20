@@ -9,9 +9,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <meta name="apple-mobile-web-app-title" content="Scanner PWA">
     <link rel="apple-touch-icon" href="icons/icon-192x192.png"> 
-   
-</html>
-<script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
     <style>
         /* TailwindCSS-Konfiguration */
         @tailwind base;
@@ -101,6 +99,12 @@
             min-width: 20px;
             text-align: center;
         }
+        .editable-ean {
+            cursor: text;
+            background-color: #f0f0f0;
+            padding: 2px 4px;
+            border-radius: 4px;
+        }
     </style>
 </head>
 <body class="bg-gray-100 font-sans text-gray-900">
@@ -111,8 +115,8 @@
         </div>
 
         <div class="mb-6 bg-white rounded-3xl shadow-sm p-6">
-            <h3 class="text-xl font-semibold text-gray-800 mb-4">Lieferschein hochladen (PDF):</h3>
-            <input type="file" id="deliveryNote" accept=".pdf" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-[#93c01f] file:text-white hover:file:bg-[#7fa31a]">
+            <h3 class="text-xl font-semibold text-gray-800 mb-4">Lieferschein hochladen (PDF, Excel, CSV):</h3>
+            <input type="file" id="deliveryNote" accept=".pdf,.xlsx,.xls,.csv" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-[#93c01f] file:text-white hover:file:bg-[#7fa31a]">
             <div id="loadingBar" class="hidden mt-2 loading-bar"></div>
         </div>
 
@@ -122,6 +126,9 @@
             <div class="flex space-x-4">
                 <input type="text" id="eanInput" placeholder="EAN eingeben" class="flex-1 p-2 border border-gray-300 rounded-3xl text-sm focus:outline-none focus:ring-2 focus:ring-[#93c01f]">
                 <button onclick="scanEAN()" class="py-2 px-4 bg-[#93c01f] text-white rounded-3xl text-sm font-semibold hover:bg-[#7fa31a] shadow-sm">Scannen</button>
+            </div>
+            <div class="mt-4">
+                <button onclick="toggleEditEAN()" id="editEANButton" class="py-2 px-4 bg-gray-600 text-white rounded-3xl text-sm font-semibold hover:bg-gray-700 shadow-sm">EAN bearbeiten (Deaktiviert)</button>
             </div>
         </div>
 
@@ -178,6 +185,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script type="text/javascript">
+        // Global variables for XLSX parsing (retained from original for compatibility)
         var gk_isXlsx = false;
         var gk_xlsxFileLookup = {};
         var gk_fileData = {};
@@ -191,22 +199,17 @@
                     var firstSheetName = workbook.SheetNames[0];
                     var worksheet = workbook.Sheets[firstSheetName];
 
-                    // Convert sheet to JSON to filter blank rows
                     var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
-                    // Filter out blank rows (rows where all cells are empty, null, or undefined)
                     var filteredData = jsonData.filter(row => row.some(filledCell));
 
-                    // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
                     var headerRowIndex = filteredData.findIndex((row, index) =>
                         row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
                     );
-                    // Fallback
                     if (headerRowIndex === -1 || headerRowIndex > 25) {
                         headerRowIndex = 0;
                     }
 
-                    // Convert filtered JSON back to CSV
-                    var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                    var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex));
                     csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
                     return csv;
                 } catch (e) {
@@ -256,6 +259,18 @@
             if (localStorage.getItem('apiKey')) {
                 document.getElementById('apiKey').value = localStorage.getItem('apiKey');
             }
+            // Register Service Worker
+            if ('serviceWorker' in navigator) {
+                window.addEventListener('load', () => {
+                    navigator.serviceWorker.register('/sw.js')
+                        .then(registration => {
+                            console.log('Service Worker registriert mit Scope:', registration.scope);
+                        })
+                        .catch(error => {
+                            console.error('Service Worker Registrierung fehlgeschlagen:', error);
+                        });
+                });
+            }
         };
 
         function openSettingsModal() {
@@ -296,6 +311,7 @@
 
         let extractedData = [];
         let unknownEANs = [];
+        let isEditingEAN = false; // Neuer Zustand für den Bearbeitungsmodus
 
         // Audio-Objekte für positive und negative Töne
         const positiveTone = new Audio('positive-tone.mp3'); // Ersetze durch tatsächliche MP3-Datei
@@ -328,16 +344,28 @@
 
         document.getElementById('deliveryNote').addEventListener('change', async (event) => {
             const file = event.target.files[0];
-            if (file && file.type === 'application/pdf') {
+            if (file) {
                 document.getElementById('uploadPrompt').classList.add('hidden');
-                // Zeige Ladebalken
                 const loadingBar = document.getElementById('loadingBar');
                 loadingBar.classList.remove('hidden');
-                await analyzeDocument(file);
-                // Verstecke Ladebalken
-                loadingBar.classList.add('hidden');
-            } else {
-                displayFeedback('Bitte laden Sie eine gültige PDF-Datei hoch.', 'feedback-error');
+
+                const fileType = file.name.split('.').pop().toLowerCase();
+                try {
+                    if (fileType === 'pdf') {
+                        await analyzeDocument(file);
+                    } else if (fileType === 'xlsx' || fileType === 'xls') {
+                        await extractDataFromExcel(file);
+                    } else if (fileType === 'csv') {
+                        await extractDataFromCSV(file);
+                    } else {
+                        displayFeedback('Ungültiger Dateityp. Bitte laden Sie eine PDF-, Excel- oder CSV-Datei hoch.', 'feedback-error');
+                    }
+                } catch (error) {
+                    console.error('Fehler beim Verarbeiten der Datei:', error);
+                    displayFeedback(`Fehler beim Verarbeiten der Datei: ${error.message}`, 'feedback-error');
+                } finally {
+                    loadingBar.classList.add('hidden');
+                }
             }
         });
 
@@ -351,15 +379,230 @@
                     const content = await page.getTextContent();
                     text += content.items.map(item => item.str).join(' ') + '\n';
                 }
-                console.log('Extracted PDF-Text:', text);
+                console.log('Extrahierter PDF-Text:', text);
                 if (!text.trim()) {
-                    throw new Error('No text extracted from PDF.');
+                    throw new Error('Kein Text aus der PDF extrahiert.');
                 }
                 return text;
             } catch (error) {
-                throw new Error(`PDF text extraction failed: ${error.message}`);
+                throw new Error(`PDF-Text-Extraktion fehlgeschlagen: ${error.message}`);
             }
         }
+
+        async function extractDataFromExcel(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const data = new Uint8Array(e.target.result);
+                        const workbook = XLSX.read(data, { type: 'array' });
+                        const firstSheetName = workbook.SheetNames[0];
+                        const worksheet = workbook.Sheets[firstSheetName];
+
+                        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false });
+
+                        if (jsonData.length === 0) {
+                            extractedData = []; // Clear previous data
+                            updateTable();
+                            reject(new Error('Leere Excel-Datei.'));
+                            return;
+                        }
+
+                        // --- Verbesserte Header-Erkennung ---
+                        let headerRowIndex = -1;
+                        let maxFilledCells = 0;
+                        const MAX_HEADER_SCAN_ROWS = 25; // Max rows to check for header
+
+                        for (let i = 0; i < Math.min(jsonData.length, MAX_HEADER_SCAN_ROWS); i++) {
+                            const row = jsonData[i];
+                            const filledCellsInRow = row.filter(cell => filledCell(cell)).length;
+                            if (filledCellsInRow > maxFilledCells) {
+                                maxFilledCells = filledCellsInRow;
+                                headerRowIndex = i;
+                            }
+                        }
+
+                        if (headerRowIndex === -1) {
+                            extractedData = [];
+                            updateTable();
+                            reject(new Error('Keine sinnvolle Kopfzeile in der Excel-Datei gefunden.'));
+                            return;
+                        }
+
+                        // Normalisiere Header-Namen
+                        const rawHeaders = jsonData[headerRowIndex].map(h => String(h || '').trim());
+                        const normalizedHeaders = rawHeaders.map(h => 
+                            h.toLowerCase().replace(/[^a-z0-9]/g, '') // Nur alphanumerisch, Kleinbuchstaben
+                        );
+
+                        const dataRows = jsonData.slice(headerRowIndex + 1);
+
+                        const mappedData = dataRows.map(row => {
+                            const item = { ean: '', product: '', quantity: '0', details: [] };
+                            let foundEAN = false;
+                            let foundProduct = false;
+                            let foundQuantity = false;
+
+                            normalizedHeaders.forEach((normalizedHeader, index) => {
+                                const value = row[index] !== undefined ? String(row[index]).trim() : '';
+
+                                if ((normalizedHeader.includes('ean') || normalizedHeader.includes('barcode')) && !foundEAN) {
+                                    item.ean = value;
+                                    foundEAN = true;
+                                } else if ((normalizedHeader.includes('produkt') || normalizedHeader.includes('bezeichnung') || normalizedHeader.includes('artikel')) && !foundProduct) {
+                                    item.product = value;
+                                    foundProduct = true;
+                                } else if ((normalizedHeader.includes('menge') || normalizedHeader.includes('anzahl')) && !foundQuantity) {
+                                    // Entferne nicht-numerische Zeichen für die Menge, aber erlaube Dezimalpunkte für potenzielle Mengen mit Nachkommastellen
+                                    item.quantity = value.replace(/[^0-9.,]/g, '').replace(',', '.'); // Ersetze Komma durch Punkt für parseFloat
+                                    // Validiere, ob es eine gültige Zahl ist, sonst Standardwert
+                                    if (isNaN(parseFloat(item.quantity))) {
+                                        item.quantity = '0';
+                                    }
+                                    foundQuantity = true;
+                                } else if (value && value !== '' && !item.details.includes(`${rawHeaders[index]}: ${value}`)) {
+                                    // Füge Details hinzu, aber nur, wenn nicht bereits eine Kerninformation
+                                    // und wenn die Zelle nicht leer ist und die Information nicht redundant ist.
+                                    item.details.push(`${rawHeaders[index]}: ${value}`);
+                                }
+                            });
+
+                            // Ensure all required fields exist
+                            item.ean = item.ean || '';
+                            item.product = item.product || '';
+                            item.quantity = item.quantity || '0'; // Sicherstellen, dass quantity immer ein String ist
+                            item.details = item.details.join(', ');
+                            item.scanned = 0;
+                            return item;
+                        }).filter(item => item.ean || item.product || parseInt(item.quantity) > 0); // Filter out rows that are entirely empty after mapping
+
+                        extractedData = mappedData;
+                        console.log('Extracted Excel data:', extractedData);
+
+                        if (!extractedData.length) {
+                            displayFeedback('Keine relevanten Daten aus Excel extrahiert. Überprüfen Sie das Dateiformat, die Kopfzeilen (EAN, Produkt, Menge) und den Inhalt.', 'feedback-error');
+                        } else {
+                            displayFeedback(`Erfolgreich ${extractedData.length} Einträge aus Excel geladen.`, 'feedback-success');
+                        }
+                        updateTable();
+                        resolve();
+                    } catch (error) {
+                        reject(new Error(`Fehler beim Parsen der Excel-Datei: ${error.message}`));
+                    }
+                };
+                reader.onerror = (error) => reject(new Error(`Fehler beim Lesen der Excel-Datei: ${error}`));
+                reader.readAsArrayBuffer(file);
+            });
+        }
+
+        async function extractDataFromCSV(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const csvText = e.target.result;
+                        // Split lines, filter empty lines, handle different line endings
+                        const lines = csvText.split(/\r?\n/).filter(line => line.trim() !== '');
+
+                        if (lines.length === 0) {
+                            extractedData = []; // Clear previous data
+                            updateTable();
+                            reject(new Error('Leere CSV-Datei.'));
+                            return;
+                        }
+
+                        // --- Verbesserte Header-Erkennung für CSV ---
+                        let headerRowIndex = -1;
+                        let maxFilledCells = 0;
+                        const MAX_HEADER_SCAN_ROWS = 25; 
+                        
+                        // Temporär parsen, um Header zu finden
+                        const tempParsedLines = lines.map(line => {
+                            // Versuche, das Trennzeichen zu bestimmen (Komma oder Semikolon)
+                            let separator = ',';
+                            if (line.includes(';')) { // Heuristik: Semikolon ist oft in DE-CSVs
+                                separator = ';';
+                            }
+                            return line.split(separator).map(cell => cell.trim().replace(/^"|"$/g, '')); // Entferne Anführungszeichen
+                        });
+
+
+                        for (let i = 0; i < Math.min(tempParsedLines.length, MAX_HEADER_SCAN_ROWS); i++) {
+                            const row = tempParsedLines[i];
+                            const filledCellsInRow = row.filter(cell => filledCell(cell)).length;
+                            if (filledCellsInRow > maxFilledCells) {
+                                maxFilledCells = filledCellsInRow;
+                                headerRowIndex = i;
+                            }
+                        }
+
+                        if (headerRowIndex === -1) {
+                            extractedData = [];
+                            updateTable();
+                            reject(new Error('Keine sinnvolle Kopfzeile in der CSV-Datei gefunden.'));
+                            return;
+                        }
+
+                        // Normalisiere Header-Namen
+                        const rawHeaders = tempParsedLines[headerRowIndex].map(h => String(h || '').trim());
+                        const normalizedHeaders = rawHeaders.map(h => 
+                            h.toLowerCase().replace(/[^a-z0-9]/g, '')
+                        );
+
+                        const dataRows = tempParsedLines.slice(headerRowIndex + 1);
+
+                        const mappedData = dataRows.map(row => {
+                            const item = { ean: '', product: '', quantity: '0', details: [] };
+                            let foundEAN = false;
+                            let foundProduct = false;
+                            let foundQuantity = false;
+
+                            normalizedHeaders.forEach((normalizedHeader, index) => {
+                                const value = row[index] !== undefined ? String(row[index]).trim() : '';
+
+                                if ((normalizedHeader.includes('ean') || normalizedHeader.includes('barcode')) && !foundEAN) {
+                                    item.ean = value;
+                                    foundEAN = true;
+                                } else if ((normalizedHeader.includes('produkt') || normalizedHeader.includes('bezeichnung') || normalizedHeader.includes('artikel')) && !foundProduct) {
+                                    item.product = value;
+                                    foundProduct = true;
+                                } else if ((normalizedHeader.includes('menge') || normalizedHeader.includes('anzahl')) && !foundQuantity) {
+                                    item.quantity = value.replace(/[^0-9.,]/g, '').replace(',', '.');
+                                    if (isNaN(parseFloat(item.quantity))) {
+                                        item.quantity = '0';
+                                    }
+                                    foundQuantity = true;
+                                } else if (value && value !== '' && !item.details.includes(`${rawHeaders[index]}: ${value}`)) {
+                                    item.details.push(`${rawHeaders[index]}: ${value}`);
+                                }
+                            });
+
+                            item.ean = item.ean || '';
+                            item.product = item.product || '';
+                            item.quantity = item.quantity || '0';
+                            item.details = item.details.join(', ');
+                            item.scanned = 0;
+                            return item;
+                        }).filter(item => item.ean || item.product || parseInt(item.quantity) > 0);
+
+                        extractedData = mappedData;
+                        console.log('Extracted CSV data:', extractedData);
+                        if (!extractedData.length) {
+                            displayFeedback('Keine relevanten Daten aus CSV extrahiert. Überprüfen Sie das Dateiformat, die Kopfzeilen (EAN, Produkt, Menge) und den Inhalt.', 'feedback-error');
+                        } else {
+                            displayFeedback(`Erfolgreich ${extractedData.length} Einträge aus CSV geladen.`, 'feedback-success');
+                        }
+                        updateTable();
+                        resolve();
+                    } catch (error) {
+                        reject(new Error(`Fehler beim Parsen der CSV-Datei: ${error.message}`));
+                    }
+                };
+                reader.onerror = (error) => reject(new Error(`Fehler beim Lesen der CSV-Datei: ${error}`));
+                reader.readAsText(file);
+            });
+        }
+
 
         async function analyzeDocument(file) {
             try {
@@ -380,11 +623,11 @@
                                 role: 'system',
                                 content: `Du bist ein Assistent, der Daten aus Lieferscheinen und Auftragsbestätigungen extrahiert. Analysiere den folgenden Text und extrahiere alle Tabellenzeilen mit den Feldern EAN, Produkt, Menge und Details. Gib die Daten in einer JSON-Liste zurück im Format: { "result": [{ "ean": "", "product": "", "quantity": "", "details": "" }, ...] }.
 
-- EAN: Extrahiere die EAN, falls vorhanden (z. B. "6921727073747"). Wenn keine EAN angegeben ist, setze "".
-- Produkt: Extrahiere die Artikelbezeichnung (z. B. "Hisense RS 818 N4 TIC *C* Side by Side Inox-Optik"). Wenn leer oder nicht vorhanden, setze "".
-- Menge: Extrahiere die Zahl der Menge (z. B. "1" aus "1 Stck"). Entferne Einheiten wie "Stck" oder "Stück".
-- Details: Kombiniere zusätzliche Informationen wie Artikelnummer, Einzelpreis, Gesamtpreis, Merkmale oder andere Angaben als durch Kommas getrennte Werte (z. B. "Artikelnr.: 57966, Einzelpreis: 599,99, Gesamtpreis: 599,99, Merkmale: 179,5 cm, Wassertank").
-- Ignoriere Kopf- und Fußzeilen (z. B. Firmeninformationen, Bankverbindungen, Adressen, Zwischensummen) und fokussiere dich ausschließlich auf Tabellenzeilen, die mit "Pos." beginnen.
+- EAN: Extrahiere die EAN, falls vorhanden (z.B. "6921727073747"). Wenn keine EAN angegeben ist, setze "".
+- Produkt: Extrahiere die Artikelbezeichnung (z.B. "Hisense RS 818 N4 TIC *C* Side by Side Inox-Optik"). Wenn leer oder nicht vorhanden, setze "".
+- Menge: Extrahiere die Zahl der Menge (z.B. "1" aus "1 Stck"). Entferne Einheiten wie "Stck" oder "Stück".
+- Details: Kombiniere zusätzliche Informationen wie Artikelnummer, Einzelpreis, Gesamtpreis, Merkmale oder andere Angaben als durch Kommas getrennte Werte (z.B. "Artikelnr.: 57966, Einzelpreis: 599,99, Gesamtpreis: 599,99, Merkmale: 179,5 cm, Wassertank").
+- Ignoriere Kopf- und Fußzeilen (z.B. Firmeninformationen, Bankverbindungen, Adressen, Zwischensummen) und fokussiere dich ausschließlich auf Tabellenzeilen, die mit "Pos." beginnen.
 - Beispiel: "Pos. 1 Artikelnr. 57966 Hisense RS 818 N4 TIC *C* Side by Side Inox-Optik - H2 / H3 / H4 / H1 - 1 04.06.2025 1 Stck 599,99 599,99 1 179,5 cm - Wassertank - 20011698 6921727073747" → {"ean": "6921727073747", "product": "Hisense RS 818 N4 TIC *C* Side by Side Inox-Optik", "quantity": "1", "details": "Artikelnr.: 57966, Einzelpreis: 599,99, Gesamtpreis: 599,99, Merkmale: H2 / H3 / H4 / H1, 179,5 cm, Wassertank, Artikelnr.: 20011698"}.
 - Wenn keine Tabellenzeilen gefunden werden, gib ein leeres Array zurück: { "result": [] }.
 - Stelle sicher, dass jede Tabellenzeile ein separates JSON-Objekt in der Liste ist.`
@@ -400,17 +643,17 @@
 
                 if (!response.ok) {
                     const errorData = await response.json();
-                    throw new Error(`API request failed: ${response.status} ${response.statusText} - ${JSON.stringify(errorData)}`);
+                    throw new Error(`API-Anfrage fehlgeschlagen: ${response.status} ${response.statusText} - ${JSON.stringify(errorData)}`);
                 }
 
                 const result = await response.json();
-                console.log('API response (raw):', JSON.stringify(result, null, 2));
-                console.log('API response (content):', result.choices?.[0]?.message?.content);
+                console.log('API-Antwort (roh):', JSON.stringify(result, null, 2));
+                console.log('API-Antwort (content):', result.choices?.[0]?.message?.content);
                 let data = [];
                 try {
                     const content = result.choices?.[0]?.message?.content;
                     if (!content) {
-                        throw new Error('No content found in API response.');
+                        throw new Error('Keine Inhalte in der API-Antwort gefunden.');
                     }
                     data = typeof content === 'string' ? JSON.parse(content) : content;
                     extractedData = Array.isArray(data.result) ? data.result : (Array.isArray(data) ? data : []);
@@ -419,18 +662,18 @@
                         item.scanned = 0;
                     });
                 } catch (error) {
-                    throw new Error(`Error parsing API response: ${error.message}`);
+                    throw new Error(`Fehler beim Parsen der API-Antwort: ${error.message}`);
                 }
 
-                console.log('Extracted data:', extractedData);
+                console.log('Extrahierte Daten:', extractedData);
                 if (!extractedData.length) {
-                    displayFeedback('No data extracted. Check PDF content or API response.', 'feedback-error');
+                    displayFeedback('Keine Daten extrahiert. Überprüfen Sie den PDF-Inhalt oder die API-Antwort.', 'feedback-error');
                 }
                 updateTable();
 
             } catch (error) {
-                console.error('Error during API analysis:', error);
-                displayFeedback(`Error analyzing document: ${error.message}`, 'feedback-error');
+                console.error('Fehler bei der API-Analyse:', error);
+                displayFeedback(`Fehler bei der Dokumentenanalyse: ${error.message}`, 'feedback-error');
                 // Verstecke Ladebalken bei Fehler
                 document.getElementById('loadingBar').classList.add('hidden');
             }
@@ -438,14 +681,12 @@
 
         function scanEAN() {
             const ean = document.getElementById('eanInput').value.trim();
-            const eanRegex = /^\d{13}$/;
+            const eanRegex = /^\d{13}$/; // Simplified EAN validation for common 13-digit EANs
             if (!eanRegex.test(ean)) {
-                displayFeedback('Invalid EAN. Please enter a 13-digit number.', 'feedback-error');
-                // Fallback: Synthetischer negativer Ton
-                playBeep(300, 0.2, 'square');
-                negativeTone.play().catch(error => {
-                    console.error('Error playing negative tone:', error);
-                    // Fallback bei MP3-Fehler
+                displayFeedback('Ungültige EAN. Bitte geben Sie eine 13-stellige Zahl ein.', 'feedback-error');
+                playBeep(300, 0.2, 'square'); // Fallback: Synthetischer negativer Ton
+                negativeTone.play().catch(error => { // Fallback bei MP3-Fehler
+                    console.error('Fehler beim Abspielen des negativen Tons:', error);
                     playBeep(300, 0.2, 'square');
                 });
                 return;
@@ -454,12 +695,10 @@
             const item = extractedData.find(item => item.ean === ean);
             if (item) {
                 item.scanned = (item.scanned || 0) + 1;
-                displayFeedback(`EAN ${ean} successfully scanned.`, 'feedback-success');
-                // Fallback: Synthetischer positiver Ton
-                playBeep(600, 0.2, 'sine');
-                positiveTone.play().catch(error => {
-                    console.error('Error playing positive tone:', error);
-                    // Fallback bei MP3-Fehler
+                displayFeedback(`EAN ${ean} erfolgreich gescannt.`, 'feedback-success');
+                playBeep(600, 0.2, 'sine'); // Fallback: Synthetischer positiver Ton
+                positiveTone.play().catch(error => { // Fallback bei MP3-Fehler
+                    console.error('Fehler beim Abspielen des positiven Tons:', error);
                     playBeep(600, 0.2, 'sine');
                 });
                 updateTable();
@@ -476,12 +715,10 @@
 
             } else {
                 unknownEANs.push(ean);
-                displayFeedback(`EAN ${ean} not found in the list.`, 'feedback-error');
-                // Fallback: Synthetischer negativer Ton
-                playBeep(300, 0.2, 'square');
-                negativeTone.play().catch(error => {
-                    console.error('Error playing negative tone:', error);
-                    // Fallback bei MP3-Fehler
+                displayFeedback(`EAN ${ean} nicht in der Liste gefunden.`, 'feedback-error');
+                playBeep(300, 0.2, 'square'); // Fallback: Synthetischer negativer Ton
+                negativeTone.play().catch(error => { // Fallback bei MP3-Fehler
+                    console.error('Fehler beim Abspielen des negativen Tons:', error);
                     playBeep(300, 0.2, 'square');
                 });
                 updateUnknownEANs();
@@ -505,11 +742,62 @@
             }
         }
 
+        function toggleEditEAN() {
+            isEditingEAN = !isEditingEAN;
+            const editButton = document.getElementById('editEANButton');
+            if (isEditingEAN) {
+                editButton.textContent = 'EAN bearbeiten (Aktiviert)';
+                editButton.classList.remove('bg-gray-600', 'hover:bg-gray-700');
+                editButton.classList.add('bg-green-600', 'hover:bg-green-700');
+                displayFeedback('EAN-Bearbeitungsmodus aktiviert. Klicken Sie auf eine EAN-Zelle, um sie zu bearbeiten.', 'feedback-success');
+            } else {
+                editButton.textContent = 'EAN bearbeiten (Deaktiviert)';
+                editButton.classList.remove('bg-green-600', 'hover:bg-green-700');
+                editButton.classList.add('bg-gray-600', 'hover:bg-gray-700');
+                displayFeedback('EAN-Bearbeitungsmodus deaktiviert.', 'feedback-success');
+            }
+            updateTable(); // Tabelle neu rendern, um Bearbeitungszustand anzuwenden
+        }
+
+        function saveEditedEAN(oldEAN, newEANElement) {
+            const newEAN = newEANElement.textContent.trim();
+            const eanRegex = /^\d{13}$/; // Simplified EAN validation
+
+            if (newEAN === oldEAN) {
+                // No change, just re-render to remove focus styles if any
+                updateTable();
+                return;
+            }
+
+            if (!eanRegex.test(newEAN)) {
+                displayFeedback('Ungültige EAN. Bitte geben Sie eine 13-stellige Zahl ein.', 'feedback-error');
+                newEANElement.textContent = oldEAN; // Revert to old EAN
+                newEANElement.focus(); // Keep focus to allow correction
+                return;
+            }
+
+            // Check if the new EAN already exists for another item
+            const existingItem = extractedData.find(item => item.ean === newEAN && item.ean !== oldEAN);
+            if (existingItem) {
+                displayFeedback(`EAN ${newEAN} existiert bereits für ein anderes Produkt.`, 'feedback-error');
+                newEANElement.textContent = oldEAN; // Revert to old EAN
+                newEANElement.focus(); // Keep focus to allow correction
+                return;
+            }
+
+            const itemToUpdate = extractedData.find(item => item.ean === oldEAN);
+            if (itemToUpdate) {
+                itemToUpdate.ean = newEAN;
+                displayFeedback(`EAN von ${oldEAN} auf ${newEAN} geändert.`, 'feedback-success');
+            }
+            updateTable(); // Tabelle neu rendern, um die Änderung zu reflektieren
+        }
+
         function updateTable() {
             const tbody = document.getElementById('dataTableBody');
             tbody.innerHTML = '';
             if (!extractedData.length) {
-                displayFeedback('No data extracted.', 'feedback-error');
+                displayFeedback('Keine Daten extrahiert.', 'feedback-error');
                 return;
             }
             extractedData.forEach(item => {
@@ -524,8 +812,12 @@
                         row.classList.add('highlight-orange');
                     }
                 }
+                const eanCellContent = isEditingEAN
+                    ? `<span contenteditable="true" class="editable-ean" onblur="saveEditedEAN('${item.ean}', this)">${item.ean || ''}</span>`
+                    : `${item.ean || ''}`;
+
                 row.innerHTML = `
-                    <td class="border border-gray-300 p-3 text-sm">${item.ean || ''}</td>
+                    <td class="border border-gray-300 p-3 text-sm">${eanCellContent}</td>
                     <td class="border border-gray-300 p-3 text-sm">${item.product || ''}</td>
                     <td class="border border-gray-300 p-3 text-sm">${item.quantity || ''}</td>
                     <td class="border border-gray-300 p-3 text-sm">
@@ -555,7 +847,7 @@
 
         function exportToExcel() {
             if (!extractedData.length) {
-                displayFeedback('No data to export.', 'feedback-error');
+                displayFeedback('Keine Daten zum Exportieren vorhanden.', 'feedback-error');
                 return;
             }
             const data = extractedData.map(item => ({
@@ -573,7 +865,7 @@
 
         function exportToCSV() {
             if (!extractedData.length) {
-                displayFeedback('No data to export.', 'feedback-error');
+                displayFeedback('Keine Daten zum Exportieren vorhanden.', 'feedback-error');
                 return;
             }
             const headers = ['EAN,Produkt,Menge,Gescannte EANs,Details'];
@@ -602,19 +894,6 @@
                 closeSettingsModal();
             }
         };
-    </script>
-    <script>
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('sw.js')
-                    .then(registration => {
-                        console.log('ServiceWorker registration successful');
-                    })
-                    .catch(err => {
-                        console.log('ServiceWorker registration failed: ', err);
-                    });
-            });
-        }
     </script>
 </body>
 </html>
