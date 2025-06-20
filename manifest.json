@@ -1,0 +1,22 @@
+{
+  "name": "UniversalScanner PWA",
+  "short_name": "Scanner PWA",
+  "description": "Eine Progressive Web App zum Scannen und Verwalten von EANs.",
+  "start_url": "LS Scanner Auswahl - mit Buttons.html",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#93c01f",
+  "icons": [
+  {
+    "src": "icons/icon-192x192.png",
+    "sizes": "192x192",
+    "type": "image/png"
+  },
+  {
+    "src": "icons/icon-512x512.png",
+    "sizes": "512x512",
+    "type": "image/png"
+  }
+],
+  "orientation": "portrait"
+}

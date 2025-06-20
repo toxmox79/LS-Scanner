@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UniversalScanner</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="apple-mobile-web-app-title" content="Scanner PWA">
+    <link rel="apple-touch-icon" href="icons/icon-192x192.png"> 
+   
+</html>
+<script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* TailwindCSS-Konfiguration */
+        @tailwind base;
+        @tailwind components;
+        @tailwind utilities;
+
+        /* Zusätzliche Stile für spezifische Anforderungen */
+        .highlight-green {
+            background-color: #d4edda; /* Grün für scanned === quantity */
+        }
+        .highlight-orange {
+            background-color: #fff3cd; /* Orange für scanned > quantity */
+        }
+        .feedback-error {
+            color: #dc2626; /* Rot für Fehlermeldungen */
+        }
+        .feedback-success {
+            color: #93c01f; /* Grün für Erfolgsmeldungen */
+        }
+        .loading-bar {
+            height: 4px;
+            background-color: #93c01f;
+            animation: loading 2s linear infinite;
+        }
+        @keyframes loading {
+            0% { width: 0%; }
+            50% { width: 100%; }
+            100% { width: 0%; }
+        }
+        .modal { 
+            display: none; 
+            position: fixed; 
+            top: 0; 
+            left: 0; 
+            width: 100%; 
+            height: 100%; 
+            background-color: rgba(0,0,0,0.5); 
+            z-index: 50;
+        }
+        .modal-content { 
+            background-color: white; 
+            margin: 15% auto; 
+            padding: 20px; 
+            width: 70%; 
+            max-width: 500px; 
+            border-radius: 1rem; 
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .close { 
+            color: #aaa; 
+            float: right; 
+            font-size: 28px; 
+            font-weight: bold; 
+            cursor: pointer; 
+        }
+        .close:hover { 
+            color: #000; 
+        }
+        .registration-link a { 
+            color: #93c01f; 
+            text-decoration: underline; 
+        }
+        .scanned-controls {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .scanned-controls button {
+            background-color: #93c01f;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .scanned-controls button:hover {
+            background-color: #7fa31a;
+        }
+        .scanned-controls span {
+            min-width: 20px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans text-gray-900">
+    <div class="container mx-auto max-w-4xl p-6">
+        <div class="flex justify-between items-center mb-6">
+            <h1 class="text-4xl font-bold text-gray-900">UniversalScanner</h1>
+            <button onclick="openSettingsModal()" class="py-2 px-4 bg-[#93c01f] text-white rounded-3xl text-sm font-semibold hover:bg-[#7fa31a] shadow-sm">Einstellungen</button>
+        </div>
+
+        <div class="mb-6 bg-white rounded-3xl shadow-sm p-6">
+            <h3 class="text-xl font-semibold text-gray-800 mb-4">Lieferschein hochladen (PDF):</h3>
+            <input type="file" id="deliveryNote" accept=".pdf" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-[#93c01f] file:text-white hover:file:bg-[#7fa31a]">
+            <div id="loadingBar" class="hidden mt-2 loading-bar"></div>
+        </div>
+
+        <div class="mb-6 bg-white rounded-3xl shadow-sm p-6">
+            <h3 class="text-xl font-semibold text-gray-800 mb-4">Daten extrahieren</h3>
+            <label class="block text-sm font-medium text-gray-700 mb-2">EAN scannen:</label>
+            <div class="flex space-x-4">
+                <input type="text" id="eanInput" placeholder="EAN eingeben" class="flex-1 p-2 border border-gray-300 rounded-3xl text-sm focus:outline-none focus:ring-2 focus:ring-[#93c01f]">
+                <button onclick="scanEAN()" class="py-2 px-4 bg-[#93c01f] text-white rounded-3xl text-sm font-semibold hover:bg-[#7fa31a] shadow-sm">Scannen</button>
+            </div>
+        </div>
+
+        <div class="mb-6 bg-white rounded-3xl shadow-sm p-6">
+            <h3 class="text-xl font-semibold text-gray-800 mb-4">Extrahierte Daten</h3>
+            <div id="unknownEANs" class="mb-4 text-sm text-gray-700"></div>
+            <table class="w-full border-collapse">
+                <thead>
+                    <tr class="bg-gray-200 text-gray-800 text-sm">
+                        <th class="border border-gray-300 p-3 text-left">EAN</th>
+                        <th class="border border-gray-300 p-3 text-left">Produkt</th>
+                        <th class="border border-gray-300 p-3 text-left">Menge</th>
+                        <th class="border border-gray-300 p-3 text-left">Gescannte EANs</th>
+                        <th class="border border-gray-300 p-3 text-left">Details</th>
+                    </tr>
+                </thead>
+                <tbody id="dataTableBody"></tbody>
+            </table>
+        </div>
+
+        <div class="mb-6 bg-white rounded-3xl shadow-sm p-6">
+            <button onclick="exportToExcel()" class="py-2 px-4 bg-[#93c01f] text-white rounded-3xl text-sm font-semibold hover:bg-[#7fa31a] shadow-sm mr-4">Als Excel exportieren</button>
+            <button onclick="exportToCSV()" class="py-2 px-4 bg-[#93c01f] text-white rounded-3xl text-sm font-semibold hover:bg-[#7fa31a] shadow-sm">Als CSV exportieren</button>
+        </div>
+
+        <div class="mb-6 hidden" id="uploadPrompt">
+            <p class="text-sm text-gray-600">Lieferschein hochladen, um das Lager zu öffnen</p>
+        </div>
+
+        <div class="mb-6" id="feedbackMessage"></div>
+
+        <div id="settingsModal" class="modal">
+            <div class="modal-content">
+                <span class="close" onclick="closeSettingsModal()">×</span>
+                <h2 class="text-xl font-semibold text-gray-800 mb-4">API Einstellungen</h2>
+                <label for="apiProvider" class="block text-sm font-medium text-gray-700 mb-2">API Anbieter auswählen:</label>
+                <select id="apiProvider" onchange="updateApiEndpoint()" class="w-full p-2 border border-gray-300 rounded-3xl text-sm focus:outline-none focus:ring-2 focus:ring-[#93c01f] mb-4">
+                    <option value="">-- Anbieter auswählen --</option>
+                    <option value="groq">Groq AI (empfohlen)</option>
+                    <option value="xai">xAI (Grok API)</option>
+                    <option value="openai">OpenAI (ChatGPT API)</option>
+                    <option value="anthropic">Anthropic (Claude API)</option>
+                    <option value="huggingface">Hugging Face (Inference API)</option>
+                </select>
+                <p id="apiEndpointDisplay" class="text-sm text-gray-700 mb-2">API Endpoint: <span id="endpointUrl"></span></p>
+                <p id="registrationLink" class="registration-link text-sm text-gray-700 mb-4"></p>
+                <label for="apiKey" class="block text-sm font-medium text-gray-700 mb-2">API Key:</label>
+                <input type="text" id="apiKey" placeholder="API Key eingeben" class="w-full p-2 border border-gray-300 rounded-3xl text-sm focus:outline-none focus:ring-2 focus:ring-[#93c01f] mb-4">
+                <button onclick="saveApiSettings()" class="py-2 px-4 bg-[#93c01f] text-white rounded-3xl text-sm font-semibold hover:bg-[#7fa31a] shadow-sm">Speichern</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+            return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+            if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+                try {
+                    var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                    var firstSheetName = workbook.SheetNames[0];
+                    var worksheet = workbook.Sheets[firstSheetName];
+
+                    // Convert sheet to JSON to filter blank rows
+                    var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                    // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                    var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                    // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                    var headerRowIndex = filteredData.findIndex((row, index) =>
+                        row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                    );
+                    // Fallback
+                    if (headerRowIndex === -1 || headerRowIndex > 25) {
+                        headerRowIndex = 0;
+                    }
+
+                    // Convert filtered JSON back to CSV
+                    var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                    csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                    return csv;
+                } catch (e) {
+                    console.error(e);
+                    return "";
+                }
+            }
+            return gk_fileData[filename] || "";
+        }
+
+        // pdf.js Worker konfigurieren
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.worker.min.js';
+
+        // API endpoint and registration link configurations
+        const apiConfigs = {
+            groq: {
+                endpoint: 'https://api.groq.com/openai/v1/chat/completions',
+                registration: 'https://console.groq.com/login'
+            },
+            xai: {
+                endpoint: 'https://api.x.ai/v1/grok',
+                registration: 'https://x.ai/api'
+            },
+            openai: {
+                endpoint: 'https://api.openai.com/v1',
+                registration: 'https://platform.openai.com/signup'
+            },
+            anthropic: {
+                endpoint: 'https://api.anthropic.com/v1',
+                registration: 'https://console.anthropic.com/login'
+            },
+            huggingface: {
+                endpoint: 'https://api-inference.huggingface.co',
+                registration: 'https://huggingface.co/join'
+            }
+        };
+
+        // Load saved settings on page load
+        let API_KEY = localStorage.getItem('apiKey') || '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';
+        let API_ENDPOINT = localStorage.getItem('apiEndpoint') || 'https://api.groq.com/openai/v1/chat/completions';
+        window.onload = function() {
+            const savedProvider = localStorage.getItem('apiProvider');
+            if (savedProvider) {
+                document.getElementById('apiProvider').value = savedProvider;
+                updateApiEndpoint();
+            }
+            if (localStorage.getItem('apiKey')) {
+                document.getElementById('apiKey').value = localStorage.getItem('apiKey');
+            }
+        };
+
+        function openSettingsModal() {
+            document.getElementById('settingsModal').style.display = 'block';
+        }
+
+        function closeSettingsModal() {
+            document.getElementById('settingsModal').style.display = 'none';
+        }
+
+        function updateApiEndpoint() {
+            const provider = document.getElementById('apiProvider').value;
+            const config = apiConfigs[provider] || { endpoint: 'Kein Anbieter ausgewählt', registration: '' };
+            document.getElementById('endpointUrl').textContent = config.endpoint;
+            const registrationLink = document.getElementById('registrationLink');
+            if (config.registration) {
+                registrationLink.innerHTML = `Registrieren: <a href="${config.registration}" target="_blank">${config.registration}</a>`;
+            } else {
+                registrationLink.innerHTML = '';
+            }
+        }
+
+        function saveApiSettings() {
+            const provider = document.getElementById('apiProvider').value;
+            const apiKey = document.getElementById('apiKey').value;
+            if (provider && apiKey) {
+                localStorage.setItem('apiProvider', provider);
+                localStorage.setItem('apiKey', apiKey);
+                localStorage.setItem('apiEndpoint', apiConfigs[provider].endpoint);
+                API_KEY = apiKey;
+                API_ENDPOINT = apiConfigs[provider].endpoint;
+                displayFeedback('API Einstellungen gespeichert!', 'feedback-success');
+                closeSettingsModal();
+            } else {
+                displayFeedback('Bitte wählen Sie einen Anbieter und geben Sie einen API Key ein.', 'feedback-error');
+            }
+        }
+
+        let extractedData = [];
+        let unknownEANs = [];
+
+        // Audio-Objekte für positive und negative Töne
+        const positiveTone = new Audio('positive-tone.mp3'); // Ersetze durch tatsächliche MP3-Datei
+        const negativeTone = new Audio('negative-tone.mp3'); // Ersetze durch tatsächliche MP3-Datei
+
+        // Fallback: Synthetische Töne mit AudioContext
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        function playBeep(frequency, duration, type = 'sine') {
+            const oscillator = audioContext.createOscillator();
+            oscillator.type = type;
+            oscillator.frequency.setValueAtTime(frequency, audioContext.currentTime);
+            oscillator.connect(audioContext.destination);
+            oscillator.start();
+            oscillator.stop(audioContext.currentTime + duration);
+        }
+
+        // Audio-Initialisierung nach Benutzerinteraktion
+        document.addEventListener('click', () => {
+            if (audioContext.state === 'suspended') {
+                audioContext.resume().then(() => console.log('AudioContext resumed'));
+            }
+        }, { once: true });
+
+        // Enter-Tastenunterstützung für EAN-Eingabe
+        document.getElementById('eanInput').addEventListener('keypress', (event) => {
+            if (event.key === 'Enter') {
+                scanEAN();
+            }
+        });
+
+        document.getElementById('deliveryNote').addEventListener('change', async (event) => {
+            const file = event.target.files[0];
+            if (file && file.type === 'application/pdf') {
+                document.getElementById('uploadPrompt').classList.add('hidden');
+                // Zeige Ladebalken
+                const loadingBar = document.getElementById('loadingBar');
+                loadingBar.classList.remove('hidden');
+                await analyzeDocument(file);
+                // Verstecke Ladebalken
+                loadingBar.classList.add('hidden');
+            } else {
+                displayFeedback('Bitte laden Sie eine gültige PDF-Datei hoch.', 'feedback-error');
+            }
+        });
+
+        async function extractTextFromPDF(file) {
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                let text = '';
+                for (let i = 1; i <= pdf.numPages; i++) {
+                    const page = await pdf.getPage(i);
+                    const content = await page.getTextContent();
+                    text += content.items.map(item => item.str).join(' ') + '\n';
+                }
+                console.log('Extracted PDF-Text:', text);
+                if (!text.trim()) {
+                    throw new Error('No text extracted from PDF.');
+                }
+                return text;
+            } catch (error) {
+                throw new Error(`PDF text extraction failed: ${error.message}`);
+            }
+        }
+
+        async function analyzeDocument(file) {
+            try {
+                // PDF-Text extrahieren
+                const pdfText = await extractTextFromPDF(file);
+
+                // API-Anfrage
+                const response = await fetch(API_ENDPOINT, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${API_KEY}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model: 'llama-3.3-70b-versatile',
+                        messages: [
+                            {
+                                role: 'system',
+                                content: `Du bist ein Assistent, der Daten aus Lieferscheinen und Auftragsbestätigungen extrahiert. Analysiere den folgenden Text und extrahiere alle Tabellenzeilen mit den Feldern EAN, Produkt, Menge und Details. Gib die Daten in einer JSON-Liste zurück im Format: { "result": [{ "ean": "", "product": "", "quantity": "", "details": "" }, ...] }.
+
+- EAN: Extrahiere die EAN, falls vorhanden (z. B. "6921727073747"). Wenn keine EAN angegeben ist, setze "".
+- Produkt: Extrahiere die Artikelbezeichnung (z. B. "Hisense RS 818 N4 TIC *C* Side by Side Inox-Optik"). Wenn leer oder nicht vorhanden, setze "".
+- Menge: Extrahiere die Zahl der Menge (z. B. "1" aus "1 Stck"). Entferne Einheiten wie "Stck" oder "Stück".
+- Details: Kombiniere zusätzliche Informationen wie Artikelnummer, Einzelpreis, Gesamtpreis, Merkmale oder andere Angaben als durch Kommas getrennte Werte (z. B. "Artikelnr.: 57966, Einzelpreis: 599,99, Gesamtpreis: 599,99, Merkmale: 179,5 cm, Wassertank").
+- Ignoriere Kopf- und Fußzeilen (z. B. Firmeninformationen, Bankverbindungen, Adressen, Zwischensummen) und fokussiere dich ausschließlich auf Tabellenzeilen, die mit "Pos." beginnen.
+- Beispiel: "Pos. 1 Artikelnr. 57966 Hisense RS 818 N4 TIC *C* Side by Side Inox-Optik - H2 / H3 / H4 / H1 - 1 04.06.2025 1 Stck 599,99 599,99 1 179,5 cm - Wassertank - 20011698 6921727073747" → {"ean": "6921727073747", "product": "Hisense RS 818 N4 TIC *C* Side by Side Inox-Optik", "quantity": "1", "details": "Artikelnr.: 57966, Einzelpreis: 599,99, Gesamtpreis: 599,99, Merkmale: H2 / H3 / H4 / H1, 179,5 cm, Wassertank, Artikelnr.: 20011698"}.
+- Wenn keine Tabellenzeilen gefunden werden, gib ein leeres Array zurück: { "result": [] }.
+- Stelle sicher, dass jede Tabellenzeile ein separates JSON-Objekt in der Liste ist.`
+                            },
+                            {
+                                role: 'user',
+                                content: pdfText
+                            }
+                        ],
+                        response_format: { type: 'json_object' }
+                    })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(`API request failed: ${response.status} ${response.statusText} - ${JSON.stringify(errorData)}`);
+                }
+
+                const result = await response.json();
+                console.log('API response (raw):', JSON.stringify(result, null, 2));
+                console.log('API response (content):', result.choices?.[0]?.message?.content);
+                let data = [];
+                try {
+                    const content = result.choices?.[0]?.message?.content;
+                    if (!content) {
+                        throw new Error('No content found in API response.');
+                    }
+                    data = typeof content === 'string' ? JSON.parse(content) : content;
+                    extractedData = Array.isArray(data.result) ? data.result : (Array.isArray(data) ? data : []);
+                    // Initialisiere scanned-Zähler für jede Position
+                    extractedData.forEach(item => {
+                        item.scanned = 0;
+                    });
+                } catch (error) {
+                    throw new Error(`Error parsing API response: ${error.message}`);
+                }
+
+                console.log('Extracted data:', extractedData);
+                if (!extractedData.length) {
+                    displayFeedback('No data extracted. Check PDF content or API response.', 'feedback-error');
+                }
+                updateTable();
+
+            } catch (error) {
+                console.error('Error during API analysis:', error);
+                displayFeedback(`Error analyzing document: ${error.message}`, 'feedback-error');
+                // Verstecke Ladebalken bei Fehler
+                document.getElementById('loadingBar').classList.add('hidden');
+            }
+        }
+
+        function scanEAN() {
+            const ean = document.getElementById('eanInput').value.trim();
+            const eanRegex = /^\d{13}$/;
+            if (!eanRegex.test(ean)) {
+                displayFeedback('Invalid EAN. Please enter a 13-digit number.', 'feedback-error');
+                // Fallback: Synthetischer negativer Ton
+                playBeep(300, 0.2, 'square');
+                negativeTone.play().catch(error => {
+                    console.error('Error playing negative tone:', error);
+                    // Fallback bei MP3-Fehler
+                    playBeep(300, 0.2, 'square');
+                });
+                return;
+            }
+
+            const item = extractedData.find(item => item.ean === ean);
+            if (item) {
+                item.scanned = (item.scanned || 0) + 1;
+                displayFeedback(`EAN ${ean} successfully scanned.`, 'feedback-success');
+                // Fallback: Synthetischer positiver Ton
+                playBeep(600, 0.2, 'sine');
+                positiveTone.play().catch(error => {
+                    console.error('Error playing positive tone:', error);
+                    // Fallback bei MP3-Fehler
+                    playBeep(600, 0.2, 'sine');
+                });
+                updateTable();
+                setTimeout(() => {
+                    const rowElements = document.querySelectorAll('#dataTableBody tr');
+                    rowElements.forEach(row => {
+                        if (row.children[0].textContent === ean) {
+                            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            row.classList.add('ring', 'ring-4', 'ring-[#93c01f]');
+                            setTimeout(() => row.classList.remove('ring', 'ring-4', 'ring-[#93c01f]'), 2000);
+                        }
+                    });
+                }, 100);
+
+            } else {
+                unknownEANs.push(ean);
+                displayFeedback(`EAN ${ean} not found in the list.`, 'feedback-error');
+                // Fallback: Synthetischer negativer Ton
+                playBeep(300, 0.2, 'square');
+                negativeTone.play().catch(error => {
+                    console.error('Error playing negative tone:', error);
+                    // Fallback bei MP3-Fehler
+                    playBeep(300, 0.2, 'square');
+                });
+                updateUnknownEANs();
+            }
+            document.getElementById('eanInput').value = '';
+        }
+
+        function decreaseScanned(ean) {
+            const item = extractedData.find(item => item.ean === ean);
+            if (item && item.scanned > 0) {
+                item.scanned--;
+                updateTable();
+            }
+        }
+
+        function increaseScanned(ean) {
+            const item = extractedData.find(item => item.ean === ean);
+            if (item) {
+                item.scanned++;
+                updateTable();
+            }
+        }
+
+        function updateTable() {
+            const tbody = document.getElementById('dataTableBody');
+            tbody.innerHTML = '';
+            if (!extractedData.length) {
+                displayFeedback('No data extracted.', 'feedback-error');
+                return;
+            }
+            extractedData.forEach(item => {
+                const row = document.createElement('tr');
+                // Farbliche Hervorhebung: Grün nur bei scanned === quantity, Orange bei scanned > quantity
+                const quantity = parseInt(item.quantity) || 0;
+                const scanned = item.scanned || 0;
+                if (scanned > 0) {
+                    if (scanned === quantity) {
+                        row.classList.add('highlight-green');
+                    } else if (scanned > quantity) {
+                        row.classList.add('highlight-orange');
+                    }
+                }
+                row.innerHTML = `
+                    <td class="border border-gray-300 p-3 text-sm">${item.ean || ''}</td>
+                    <td class="border border-gray-300 p-3 text-sm">${item.product || ''}</td>
+                    <td class="border border-gray-300 p-3 text-sm">${item.quantity || ''}</td>
+                    <td class="border border-gray-300 p-3 text-sm">
+                        <div class="scanned-controls">
+                            <button onclick="decreaseScanned('${item.ean}')">-</button>
+                            <span id="scannedCount-${item.ean}">${item.scanned || 0}</span>
+                            <button onclick="increaseScanned('${item.ean}')">+</button>
+                        </div>
+                    </td>
+                    <td class="border border-gray-300 p-3 text-sm">${item.details || ''}</td>
+                `;
+                tbody.appendChild(row);
+            });
+            updateUnknownEANs();
+            const allScanned = extractedData.length > 0 && extractedData.every(item => parseInt(item.scanned) === parseInt(item.quantity));
+            document.body.style.backgroundColor = allScanned ? '#d4edda' : '';
+        }
+
+        function updateUnknownEANs() {
+            const unknownEANsDiv = document.getElementById('unknownEANs');
+            if (unknownEANs.length > 0) {
+                unknownEANsDiv.innerHTML = `<p class="text-sm font-medium text-gray-700">Unbekannte EANs: ${unknownEANs.join(', ')}</p>`;
+            } else {
+                unknownEANsDiv.innerHTML = '';
+            }
+        }
+
+        function exportToExcel() {
+            if (!extractedData.length) {
+                displayFeedback('No data to export.', 'feedback-error');
+                return;
+            }
+            const data = extractedData.map(item => ({
+                EAN: item.ean,
+                Produkt: item.product,
+                Menge: item.quantity,
+                'Gescannte EANs': item.scanned || 0,
+                Details: item.details
+            }));
+            const ws = XLSX.utils.json_to_sheet(data);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, 'Lager');
+            XLSX.writeFile(wb, 'lager_export.xlsx');
+        }
+
+        function exportToCSV() {
+            if (!extractedData.length) {
+                displayFeedback('No data to export.', 'feedback-error');
+                return;
+            }
+            const headers = ['EAN,Produkt,Menge,Gescannte EANs,Details'];
+            const rows = extractedData.map(item => 
+                `${item.ean || ''},${item.product || ''},${item.quantity || ''},${item.scanned || 0},${item.details || ''}`
+            );
+            const csv = [...headers, ...rows].join('\n');
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'lager_export.csv';
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function displayFeedback(message, type) {
+            const feedbackDiv = document.getElementById('feedbackMessage');
+            feedbackDiv.innerHTML = `<p class="text-sm ${type}">${message}</p>`;
+        }
+
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const modal = document.getElementById('settingsModal');
+            if (event.target === modal) {
+                closeSettingsModal();
+            }
+        };
+    </script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js')
+                    .then(registration => {
+                        console.log('ServiceWorker registration successful');
+                    })
+                    .catch(err => {
+                        console.log('ServiceWorker registration failed: ', err);
+                    });
+            });
+        }
+    </script>
+</body>
+</html>
