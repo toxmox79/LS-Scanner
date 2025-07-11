@@ -309,6 +309,34 @@
             }
         }
 
+        function consolidateData(data) {
+            const consolidatedMap = new Map();
+            const noEanItems = [];
+
+            data.forEach(item => {
+                const ean = item.ean ? String(item.ean).trim() : '';
+                if (ean) {
+                    if (consolidatedMap.has(ean)) {
+                        const existingItem = consolidatedMap.get(ean);
+                        // Quantities can be strings with comma, parse them, add them, then convert back to string.
+                        const currentQuantity = parseFloat(String(existingItem.quantity).replace(',', '.')) || 0;
+                        const newQuantity = parseFloat(String(item.quantity).replace(',', '.')) || 0;
+                        existingItem.quantity = String(currentQuantity + newQuantity);
+
+                        // Merge details, avoiding duplicates. Use a clear separator.
+                        if (item.details && String(item.details).trim() && !existingItem.details.includes(item.details)) {
+                            existingItem.details += `; ${item.details}`;
+                        }
+                    } else {
+                        consolidatedMap.set(ean, { ...item });
+                    }
+                } else {
+                    noEanItems.push(item);
+                }
+            });
+            return [...Array.from(consolidatedMap.values()), ...noEanItems];
+        }
+
         let extractedData = [];
         let unknownEANs = [];
         let isEditingEAN = false; // Neuer Zustand für den Bearbeitungsmodus
@@ -477,6 +505,7 @@
                         }).filter(item => item.ean || item.product || parseInt(item.quantity) > 0); // Filter out rows that are entirely empty after mapping
 
                         extractedData = mappedData;
+                        extractedData = consolidateData(extractedData);
                         console.log('Extracted Excel data:', extractedData);
 
                         if (!extractedData.length) {
@@ -586,6 +615,7 @@
                         }).filter(item => item.ean || item.product || parseInt(item.quantity) > 0);
 
                         extractedData = mappedData;
+                        extractedData = consolidateData(extractedData);
                         console.log('Extracted CSV data:', extractedData);
                         if (!extractedData.length) {
                             displayFeedback('Keine relevanten Daten aus CSV extrahiert. Überprüfen Sie das Dateiformat, die Kopfzeilen (EAN, Produkt, Menge) und den Inhalt.', 'feedback-error');
@@ -661,6 +691,7 @@
                     extractedData.forEach(item => {
                         item.scanned = 0;
                     });
+                    extractedData = consolidateData(extractedData);
                 } catch (error) {
                     throw new Error(`Fehler beim Parsen der API-Antwort: ${error.message}`);
                 }
